@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"sync"
 	"time"
 	// "net"
 	"net/http"
@@ -23,10 +24,48 @@ type ChannelMessage struct {
 	Addition string
 }
 
+type RequestData struct {
+	request    *http.Request
+	body       *bytes.Buffer
+	headers    http.Header
+	statusCode int
+}
+
+type RequestMap struct {
+	data map[string]*RequestData
+	lock *sync.RWMutex
+}
+
+func newRequestMap() *RequestMap {
+	return &RequestMap{
+		data: make(map[string]*RequestData),
+		lock: &sync.RWMutex{},
+	}
+}
+
+func (self *RequestMap) set(key string, value *RequestData) {
+	self.lock.Lock()
+	defer self.lock.Unlock()
+	self.data[key] = value
+}
+
+func (self *RequestMap) get(key string) (*RequestData, bool) {
+	self.lock.RLock()
+	defer self.lock.RUnlock()
+	v, ok := self.data[key]
+	return v, ok
+}
+
+func (self *RequestMap) erase(key string) {
+	self.lock.Lock()
+	defer self.lock.Unlock()
+	delete(self.data, key)
+}
+
 var (
-	msgChan    chan *ChannelMessage
 	serveMux   *http.ServeMux
-	requestMap map[string]*http.Request
+	requestMap *RequestMap
+	stdMutex   *sync.Mutex
 )
 
 var (
@@ -38,8 +77,8 @@ var (
 
 const (
 	letters                = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	ENVNAME_REQUEST_ID     = "HTTPCB_REQUEST_ID"
-	ENVNAME_SERVER_ADDRESS = "HTTPCB_SERVER_ADDRESS"
+	ENVNAME_REQUEST_ID     = "HTTPBIN_REQUEST_ID"
+	ENVNAME_SERVER_ADDRESS = "HTTPBIN_SERVER_ADDRESS"
 )
 
 func randString() string {
@@ -55,115 +94,142 @@ func randString() string {
 	return string(b)
 }
 
+func Printf(format string, a ...interface{}) (n int, err error) {
+	stdMutex.Lock()
+	defer stdMutex.Unlock()
+	return fmt.Printf(format+"\n", a...)
+}
+
+func Eprintf(format string, a ...interface{}) (n int, err error) {
+	stdMutex.Lock()
+	defer stdMutex.Unlock()
+	return fmt.Fprintf(os.Stderr, format+"\n", a...)
+}
+
+func PrintReader(src io.Reader) (written int64, err error) {
+	stdMutex.Lock()
+	defer stdMutex.Unlock()
+	return io.Copy(os.Stdout, src)
+}
+
+func EprintReader(src io.Reader) (written int64, err error) {
+	stdMutex.Lock()
+	defer stdMutex.Unlock()
+	return io.Copy(os.Stderr, src)
+}
+
+func Eprintln(a ...interface{}) (n int, err error) {
+	stdMutex.Lock()
+	defer stdMutex.Unlock()
+	return fmt.Fprintln(os.Stderr, a...)
+}
+
 func callbackHandle(w http.ResponseWriter, r *http.Request) {
 	requestId := randString()
-	requestMap[requestId] = r
-	go execScript(scriptFile, requestId)
-	body := &bytes.Buffer{}
-	for {
-		msg := <-msgChan
-		if msg.Id != requestId {
-			msgChan <- msg
-			continue
-		}
-		if msg.Action == "end" {
-			delete(requestMap, requestId)
-			break
-		}
-		switch msg.Action {
-		case "add":
-			switch msg.Item {
-			case "header":
-				head := strings.SplitN(msg.Addition, ":", 2)
-				w.Header().Add(head[0], head[1])
-				break
-			case "body":
-				body.WriteString(msg.Addition)
-				break
-			}
-			break
-		case "set":
-			if msg.Item == "code" {
-				code, _ := strconv.Atoi(msg.Addition)
-				w.WriteHeader(code)
-			}
-		}
+	request := &RequestData{
+		request:    r,
+		body:       &bytes.Buffer{},
+		headers:    w.Header(),
+		statusCode: 200,
 	}
-	io.Copy(w, body)
+	requestMap.set(requestId, request)
+	execScript(scriptFile, requestId)
+
+	w.WriteHeader(request.statusCode)
+	io.Copy(w, request.body)
+
+	requestMap.erase(requestId)
 }
 
 func masterHandle(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fail to read body %v\n", err)
+		Eprintf("fail to read body %v", err)
 		return
 	}
+
 	msg := &ChannelMessage{}
 	err = json.Unmarshal(body, msg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fail to parse body '%v', error %v\n", string(body), err)
+		Eprintf("fail to parse body '%v', error %v", string(body), err)
 		return
 	}
-	// fmt.Printf("recv msg %+v\n", msg)
+
+	req, ok := requestMap.get(msg.Id)
+	if !ok {
+		Eprintf("not exist request '%v'", msg.Id)
+		return
+	}
+
 	switch msg.Action {
 	case "get":
-		if request, ok := requestMap[msg.Id]; ok {
-			switch msg.Item {
-			case "header":
-				if len(msg.Addition) == 0 {
-					request.Header.Write(w)
-				} else {
-					w.Write([]byte(request.Header.Get(msg.Addition)))
-				}
-				break
-			case "body":
-				io.Copy(w, request.Body)
-				break
-			case "url":
-				w.Write([]byte(request.URL.String()))
-				break
-			case "host":
-				w.Write([]byte(request.Host))
-				break
-			case "method":
-				w.Write([]byte(request.Method))
-				break
-			case "form":
-				request.ParseForm()
-				if len(msg.Addition) == 0 {
-					w.Write([]byte(request.Form.Encode()))
-				} else {
-					w.Write([]byte(request.Form.Get(msg.Addition)))
-				}
-				break
-			case "postform":
-				request.ParseForm()
-				if len(msg.Addition) == 0 {
-					w.Write([]byte(request.PostForm.Encode()))
-				} else {
-					w.Write([]byte(request.PostForm.Get(msg.Addition)))
-				}
-				break
+		switch msg.Item {
+		case "method":
+			w.Write([]byte(req.request.Method))
+			break
+		case "url":
+			w.Write([]byte(req.request.URL.String()))
+			break
+		case "proto":
+			w.Write([]byte(req.request.Proto))
+			break
+		case "host":
+			w.Write([]byte(req.request.Host))
+			break
+		case "header":
+			if len(msg.Addition) == 0 {
+				req.request.Header.Write(w)
+			} else {
+				w.Write([]byte(req.request.Header.Get(msg.Addition)))
 			}
+			break
+		case "body":
+			io.Copy(w, req.request.Body)
+			break
+		case "form":
+			req.request.ParseForm()
+			if len(msg.Addition) == 0 {
+				w.Write([]byte(req.request.Form.Encode()))
+			} else {
+				w.Write([]byte(req.request.Form.Get(msg.Addition)))
+			}
+			break
+		case "postform":
+			req.request.ParseForm()
+			if len(msg.Addition) == 0 {
+				w.Write([]byte(req.request.PostForm.Encode()))
+			} else {
+				w.Write([]byte(req.request.PostForm.Get(msg.Addition)))
+			}
+			break
 		}
 		break
 	case "add":
-		msgChan <- msg
+		switch msg.Item {
+		case "header":
+			head := strings.SplitN(msg.Addition, ":", 2)
+			req.headers.Add(head[0], head[1])
+			break
+		case "body":
+			req.body.WriteString(msg.Addition)
+			break
+		}
 		break
 	case "set":
-		msgChan <- msg
+		if msg.Item == "code" {
+			code, ok := strconv.Atoi(msg.Addition)
+			if ok != nil {
+				req.statusCode = code
+			}
+		}
 		break
 	}
 }
 
-func newServe() error {
+func ListenAndServe() error {
 	serveMux.HandleFunc(listenPattern, callbackHandle)
 	serveMux.HandleFunc(masterPattern, masterHandle)
-	err := http.ListenAndServe(listenPort, serveMux)
-	if err != nil {
-		return fmt.Errorf("fail to serve: %v", err)
-	}
-	return nil
+	return http.ListenAndServe(listenPort, serveMux)
 }
 
 func setExecEnviron(cmd *exec.Cmd, key, value string) {
@@ -176,46 +242,41 @@ func execScript(scriptName string, requestId string) {
 	setExecEnviron(cmd, ENVNAME_REQUEST_ID, requestId)
 	setExecEnviron(cmd, ENVNAME_SERVER_ADDRESS, fmt.Sprintf("%s:%s", listenPort, masterPattern))
 
-	stdout, err := cmd.StdoutPipe()
+	bar := "\033[0;30m====================\033[0m"
+
+	buffer := &bytes.Buffer{}
+	buffer.Write([]byte(fmt.Sprintf("%s %s %s\n", bar, requestId, bar)))
+
+	cmd.Stdout = buffer
+	cmd.Stderr = buffer
+
+	err := cmd.Start()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		Eprintf("fail to execute command '%v'", err)
 		return
 	}
-	err = cmd.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	defer stdout.Close()
-	stdoutBytes, err := ioutil.ReadAll(stdout)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	fmt.Println(string(stdoutBytes))
-	msg := &ChannelMessage{
-		Id:     requestId,
-		Action: "end",
-	}
-	msgChan <- msg
+	cmd.Wait()
+
+	buffer.Write([]byte(fmt.Sprintf("%s %s %s\n", bar, requestId, bar)))
+	PrintReader(buffer)
 }
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
-	msgChan = make(chan *ChannelMessage)
 	serveMux = http.NewServeMux()
-	requestMap = make(map[string]*http.Request)
+	requestMap = newRequestMap()
+	stdMutex = &sync.Mutex{}
 }
 
 func printEmbedModeUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <action> <item> [addition]\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "Example:\n")
-	fmt.Fprintf(os.Stderr, "\t%s get header Host\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\t%s add header Content-Type:application/json\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "\t%s add body ok\n", os.Args[0])
+	Eprintf("Usage: %s <action> <item> [addition]", os.Args[0])
+	Eprintf("Example:")
+	Eprintf("\t%s get header Host", os.Args[0])
+	Eprintf("\t%s add header Content-Type:application/json", os.Args[0])
+	Eprintf("\t%s add body ok", os.Args[0])
 }
 
-func embedMode(requestId, serverAddress string) {
+func embedRun(requestId, serverAddress string) {
 	if len(os.Args) < 3 {
 		printEmbedModeUsage()
 		os.Exit(1)
@@ -232,7 +293,7 @@ func embedMode(requestId, serverAddress string) {
 
 	body, err := json.Marshal(msg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fail to encode msg '%v' error '%v'\n", msg, err)
+		Eprintf("fail to encode msg '%v' error '%v'", msg, err)
 		os.Exit(1)
 	}
 
@@ -244,22 +305,32 @@ func embedMode(requestId, serverAddress string) {
 
 	resp, err := http.Post(serverAddress, "application/json", strings.NewReader(string(body)))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "fail to post request '%v'\n", err)
+		Eprintf("fail to post request '%v'", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "fail to read body '%v'\n", err)
+
+	if resp.StatusCode == http.StatusOK {
+		_, err = PrintReader(resp.Body)
+		if err != nil {
+			Eprintf("fail to read body '%v'", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	} else {
+		_, err = EprintReader(resp.Body)
+		if err != nil {
+			Eprintf("fail to read body '%v'", err)
+			os.Exit(1)
+		}
 		os.Exit(1)
 	}
-	fmt.Printf(string(body))
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <adress> <script-file>\n", os.Args[0])
-	fmt.Fprintf(os.Stderr, "Example:\n")
-	fmt.Fprintf(os.Stderr, "\t%s :8080/callback cb.sh\n", os.Args[0])
+	Eprintf("Usage: %s <adress> <script-file>", os.Args[0])
+	Eprintf("Example:")
+	Eprintf("\t%s :8080/callback cb.sh", os.Args[0])
 }
 
 func main() {
@@ -267,7 +338,7 @@ func main() {
 	requestId := os.Getenv(ENVNAME_REQUEST_ID)
 	serverAddress := os.Getenv(ENVNAME_SERVER_ADDRESS)
 	if len(requestId) != 0 && len(serverAddress) != 0 {
-		embedMode(requestId, serverAddress)
+		embedRun(requestId, serverAddress)
 		return
 	}
 
@@ -278,7 +349,7 @@ func main() {
 
 	address := strings.SplitN(os.Args[1], "/", 2)
 	if len(address) != 2 {
-		fmt.Fprintf(os.Stderr, "unexpected adderss format '%v'\n", os.Args[1])
+		Eprintf("unexpected adderss format '%v'", os.Args[1])
 		os.Exit(1)
 	}
 
@@ -288,14 +359,14 @@ func main() {
 	masterPattern = "/" + randString()
 
 	if fileInfo, err := os.Stat(scriptFile); os.IsNotExist(err) || fileInfo.IsDir() {
-		fmt.Fprintf(os.Stderr, "script '%v' does not exist\n", scriptFile)
+		Eprintf("script '%v' does not exist", scriptFile)
 		return
 	}
-	fmt.Printf("serve '%v' pattern '%v' scriptName '%v'\n", listenPort, listenPattern, scriptFile)
+	Printf("serve '%v' pattern '%v' scriptName '%v'", listenPort, listenPattern, scriptFile)
 
-	err := newServe()
+	err := ListenAndServe()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
+		Eprintf("fail to listen and serve: %v", err)
+		os.Exit(1)
 	}
 }

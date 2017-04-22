@@ -18,10 +18,10 @@ import (
 )
 
 type ChannelMessage struct {
-	Id       string
-	Action   string
-	Item     string
-	Addition string
+	Id     string
+	Action string
+	Item   string
+	Args   []byte
 }
 
 type RequestData struct {
@@ -71,7 +71,7 @@ var (
 var (
 	listenPort    string
 	listenPattern string
-	scriptFile    string
+	bashArgs      []string
 	masterPattern string
 )
 
@@ -133,7 +133,7 @@ func callbackHandle(w http.ResponseWriter, r *http.Request) {
 		statusCode: 200,
 	}
 	requestMap.set(requestId, request)
-	execScript(scriptFile, requestId)
+	execScript(bashArgs, requestId)
 
 	w.WriteHeader(request.statusCode)
 	io.Copy(w, request.body)
@@ -144,26 +144,34 @@ func callbackHandle(w http.ResponseWriter, r *http.Request) {
 func masterHandle(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		Eprintf("fail to read body %v", err)
+		Eprintf("failed to read body %v", err)
 		return
 	}
 
 	msg := &ChannelMessage{}
 	err = json.Unmarshal(body, msg)
 	if err != nil {
-		Eprintf("fail to parse body '%v', error %v", string(body), err)
+		Eprintf("failed to parse body '%v', error %v", string(body), err)
 		return
 	}
 
 	req, ok := requestMap.get(msg.Id)
 	if !ok {
-		Eprintf("not exist request '%v'", msg.Id)
+		Eprintf("request '%v' does not exist", msg.Id)
 		return
 	}
-
 	switch msg.Action {
 	case "get":
 		switch msg.Item {
+		case "remote-addr":
+			w.Write([]byte(req.request.RemoteAddr))
+			break
+		case "request-uri":
+			w.Write([]byte(req.request.RequestURI))
+			break
+		case "content-length":
+			w.Write([]byte(strconv.FormatInt(req.request.ContentLength, 10)))
+			break
 		case "method":
 			w.Write([]byte(req.request.Method))
 			break
@@ -177,10 +185,10 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(req.request.Host))
 			break
 		case "header":
-			if len(msg.Addition) == 0 {
+			if len(msg.Args) == 0 {
 				req.request.Header.Write(w)
 			} else {
-				w.Write([]byte(req.request.Header.Get(msg.Addition)))
+				w.Write([]byte(req.request.Header.Get(string(msg.Args))))
 			}
 			break
 		case "body":
@@ -188,18 +196,18 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 			break
 		case "form":
 			req.request.ParseForm()
-			if len(msg.Addition) == 0 {
+			if len(msg.Args) == 0 {
 				w.Write([]byte(req.request.Form.Encode()))
 			} else {
-				w.Write([]byte(req.request.Form.Get(msg.Addition)))
+				w.Write([]byte(req.request.Form.Get(string(msg.Args))))
 			}
 			break
 		case "postform":
 			req.request.ParseForm()
-			if len(msg.Addition) == 0 {
+			if len(msg.Args) == 0 {
 				w.Write([]byte(req.request.PostForm.Encode()))
 			} else {
-				w.Write([]byte(req.request.PostForm.Get(msg.Addition)))
+				w.Write([]byte(req.request.PostForm.Get(string(msg.Args))))
 			}
 			break
 		}
@@ -207,17 +215,17 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 	case "add":
 		switch msg.Item {
 		case "header":
-			head := strings.SplitN(msg.Addition, ":", 2)
+			head := strings.SplitN(string(msg.Args), ":", 2)
 			req.headers.Add(head[0], head[1])
 			break
 		case "body":
-			req.body.WriteString(msg.Addition)
+			req.body.Write(msg.Args)
 			break
 		}
 		break
 	case "set":
 		if msg.Item == "code" {
-			code, ok := strconv.Atoi(msg.Addition)
+			code, ok := strconv.Atoi(string(msg.Args))
 			if ok != nil {
 				req.statusCode = code
 			}
@@ -236,8 +244,8 @@ func setExecEnviron(cmd *exec.Cmd, key, value string) {
 	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 }
 
-func execScript(scriptName string, requestId string) {
-	cmd := exec.Command("bash", scriptName)
+func execScript(scriptName []string, requestId string) {
+	cmd := exec.Command("bash", scriptName...)
 	cmd.Env = os.Environ()
 	setExecEnviron(cmd, ENVNAME_REQUEST_ID, requestId)
 	setExecEnviron(cmd, ENVNAME_SERVER_ADDRESS, fmt.Sprintf("%s:%s", listenPort, masterPattern))
@@ -245,19 +253,19 @@ func execScript(scriptName string, requestId string) {
 	bar := "\033[0;30m====================\033[0m"
 
 	buffer := &bytes.Buffer{}
-	buffer.Write([]byte(fmt.Sprintf("%s %s %s\n", bar, requestId, bar)))
+	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, requestId, bar)))
 
 	cmd.Stdout = buffer
 	cmd.Stderr = buffer
 
 	err := cmd.Start()
 	if err != nil {
-		Eprintf("fail to execute command '%v'", err)
+		Eprintf("failed to execute command '%v'", err)
 		return
 	}
 	cmd.Wait()
 
-	buffer.Write([]byte(fmt.Sprintf("%s %s %s\n", bar, requestId, bar)))
+	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, requestId, bar)))
 	PrintReader(buffer)
 }
 
@@ -288,12 +296,19 @@ func embedRun(requestId, serverAddress string) {
 	}
 
 	if len(os.Args) > 3 {
-		msg.Addition = os.Args[3]
+		msg.Args = []byte(os.Args[3])
+	} else if msg.Action == "add" && msg.Item == "body" {
+		body, err := ioutil.ReadAll(os.Stdin)
+		if err != nil {
+			Eprintf("failed to read stdin '%v'", err)
+			os.Exit(1)
+		}
+		msg.Args = body
 	}
 
 	body, err := json.Marshal(msg)
 	if err != nil {
-		Eprintf("fail to encode msg '%v' error '%v'", msg, err)
+		Eprintf("failed to encode msg '%v' error '%v'", msg, err)
 		os.Exit(1)
 	}
 
@@ -305,7 +320,7 @@ func embedRun(requestId, serverAddress string) {
 
 	resp, err := http.Post(serverAddress, "application/json", strings.NewReader(string(body)))
 	if err != nil {
-		Eprintf("fail to post request '%v'", err)
+		Eprintf("failed to post request '%v'", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
@@ -313,14 +328,14 @@ func embedRun(requestId, serverAddress string) {
 	if resp.StatusCode == http.StatusOK {
 		_, err = PrintReader(resp.Body)
 		if err != nil {
-			Eprintf("fail to read body '%v'", err)
+			Eprintf("failed to read body '%v'", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	} else {
 		_, err = EprintReader(resp.Body)
 		if err != nil {
-			Eprintf("fail to read body '%v'", err)
+			Eprintf("failed to read body '%v'", err)
 			os.Exit(1)
 		}
 		os.Exit(1)
@@ -329,6 +344,7 @@ func embedRun(requestId, serverAddress string) {
 
 func printUsage() {
 	Eprintf("Usage: %s <adress> <script-file>", os.Args[0])
+	Eprintf("Usage: %s <adress> -c <commands>", os.Args[0])
 	Eprintf("Example:")
 	Eprintf("\t%s :8080/callback cb.sh", os.Args[0])
 }
@@ -342,7 +358,7 @@ func main() {
 		return
 	}
 
-	if len(os.Args) != 3 {
+	if len(os.Args) < 3 {
 		printUsage()
 		os.Exit(1)
 	}
@@ -355,18 +371,15 @@ func main() {
 
 	listenPort = address[0]
 	listenPattern = "/" + address[1]
-	scriptFile = os.Args[2]
 	masterPattern = "/" + randString()
 
-	if fileInfo, err := os.Stat(scriptFile); os.IsNotExist(err) || fileInfo.IsDir() {
-		Eprintf("script '%v' does not exist", scriptFile)
-		return
-	}
-	Printf("serve '%v' pattern '%v' scriptName '%v'", listenPort, listenPattern, scriptFile)
+	bashArgs = os.Args[2:]
+
+	Printf("serve '%v' pattern '%v' bash args %#v", listenPort, listenPattern, bashArgs)
 
 	err := ListenAndServe()
 	if err != nil {
-		Eprintf("fail to listen and serve: %v", err)
+		Eprintf("failed to listen and serve: %v", err)
 		os.Exit(1)
 	}
 }

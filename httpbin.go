@@ -133,7 +133,7 @@ func callbackHandle(w http.ResponseWriter, r *http.Request) {
 		statusCode: 200,
 	}
 	requestMap.set(requestId, request)
-	execScript(bashArgs, requestId)
+	execScript(bashArgs, requestId, r.RemoteAddr)
 
 	w.WriteHeader(request.statusCode)
 	io.Copy(w, request.body)
@@ -244,7 +244,7 @@ func setExecEnviron(cmd *exec.Cmd, key, value string) {
 	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 }
 
-func execScript(scriptName []string, requestId string) {
+func execScript(scriptName []string, requestId, remoteAddr string) {
 	cmd := exec.Command("bash", scriptName...)
 	cmd.Env = os.Environ()
 	setExecEnviron(cmd, ENVNAME_REQUEST_ID, requestId)
@@ -253,7 +253,7 @@ func execScript(scriptName []string, requestId string) {
 	bar := "\033[0;30m====================\033[0m"
 
 	buffer := &bytes.Buffer{}
-	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, requestId, bar)))
+	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, remoteAddr, bar)))
 
 	cmd.Stdout = buffer
 	cmd.Stderr = buffer
@@ -265,7 +265,7 @@ func execScript(scriptName []string, requestId string) {
 	}
 	cmd.Wait()
 
-	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, requestId, bar)))
+	buffer.Write([]byte(fmt.Sprintf("\n%s %s %s\n", bar, remoteAddr, bar)))
 	PrintReader(buffer)
 }
 

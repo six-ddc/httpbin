@@ -1,7 +1,7 @@
 # httpbin
 
 Testing an HTTP Library can become difficult sometimes.
-[httpbin](https://github.com/six-ddc/httpbin) is fantastic for testing HTTP requests, and easy to control the response.
+[httpbin](https://github.com/six-ddc/httpbin) is fantastic for testing HTTP requests, and easy to custom the response.
 
 ## Installation
 
@@ -44,6 +44,8 @@ $ curl -O http://127.0.0.1:8080/github.png
 
 ## Manual
 
+### Test HTTP request
+
 ```bash
 httpbin get remote-addr
 httpbin get ip
@@ -56,7 +58,11 @@ httpbin get header [key]
 httpbin get form   [key]
 httpbin get post-form [key]
 httpbin get body
+```
 
+### Custom HTTP response
+
+```bash
 httpbin add header <key:value>
 httpbin add body   [body]
 httpbin add body < [body]

@@ -169,9 +169,6 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 		case "ip":
 			w.Write([]byte(strings.Split(req.request.RemoteAddr, ":")[0]))
 			break
-		case "request-uri":
-			w.Write([]byte(req.request.RequestURI))
-			break
 		case "content-length":
 			w.Write([]byte(strconv.FormatInt(req.request.ContentLength, 10)))
 			break
@@ -205,7 +202,7 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 				w.Write([]byte(req.request.Form.Get(string(msg.Args))))
 			}
 			break
-		case "postform":
+		case "post-form":
 			req.request.ParseForm()
 			if len(msg.Args) == 0 {
 				w.Write([]byte(req.request.PostForm.Encode()))

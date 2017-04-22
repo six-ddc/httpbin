@@ -166,6 +166,9 @@ func masterHandle(w http.ResponseWriter, r *http.Request) {
 		case "remote-addr":
 			w.Write([]byte(req.request.RemoteAddr))
 			break
+		case "ip":
+			w.Write([]byte(strings.Split(req.request.RemoteAddr, ":")[0]))
+			break
 		case "request-uri":
 			w.Write([]byte(req.request.RequestURI))
 			break
@@ -344,9 +347,10 @@ func embedRun(requestId, serverAddress string) {
 
 func printUsage() {
 	Eprintf("Usage: %s <adress> <script-file>", os.Args[0])
-	Eprintf("Usage: %s <adress> -c <commands>", os.Args[0])
+	Eprintf("       %s <adress> -c <commands>", os.Args[0])
 	Eprintf("Example:")
 	Eprintf("\t%s :8080/callback cb.sh", os.Args[0])
+	Eprintf("\t%s 127.0.0.1:8080/callback -c \"httpbin add body hello\" ", os.Args[0])
 }
 
 func main() {

@@ -52,13 +52,14 @@ httpbin get method
 httpbin get url
 httpbin get proto
 httpbin get host
-httpbin get header
+httpbin get header [key]
+httpbin get form   [key]
+httpbin get post-form [key]
 httpbin get body
-httpbin get form
-httpbin get post-form
 
-httpbin add header <k:v>
-httpbin add body [body]
+httpbin add header <key:value>
+httpbin add body   [body]
+httpbin add body < [body]
 
 httpbin set code [code]
 ```

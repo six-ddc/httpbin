@@ -3,6 +3,8 @@
 Testing an HTTP Library can become difficult sometimes.
 [httpbin](https://github.com/six-ddc/httpbin) is fantastic for testing HTTP requests, and easy to custom the response.
 
+![](https://github.com/six-ddc/httpbin/blob/master/demo.gif?raw=true)
+
 ## Installation
 
 ```bash

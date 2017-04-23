@@ -8,7 +8,7 @@ Testing an HTTP Library can become difficult sometimes.
 ## Installation
 
 ```bash
-$ go get https://github.com/six-ddc/httpbin
+$ go get github.com/six-ddc/httpbin
 ```
 
 ## Usage

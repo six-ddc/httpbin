@@ -36,6 +36,13 @@ $ curl http://127.0.0.1:8080/ip
 ```
 
 ```bash
+$ httpbin :8080/hello -c 'sleep 5'
+
+$ curl --max-time 3 http://127.0.0.1:8080/hello
+## curl: (28) Operation timed out after 3003 milliseconds with 0 bytes received
+```
+
+```bash
 $ httpbin :8080/github.png -c 'curl https://assets-cdn.github.com/images/modules/logos_page/GitHub-Mark.png | httpbin add body'
 
 $ curl -O http://127.0.0.1:8080/github.png
@@ -44,7 +51,7 @@ $ curl -O http://127.0.0.1:8080/github.png
 
 ## Manual
 
-### Test HTTP request
+* Test HTTP request
 
 ```bash
 httpbin get remote-addr
@@ -60,7 +67,7 @@ httpbin get post-form [key]
 httpbin get body
 ```
 
-### Custom HTTP response
+* Custom HTTP response
 
 ```bash
 httpbin add header <key:value>
